@@ -88,7 +88,10 @@ impl GitHubService {
     }
 
     /// Discover repositories from a specific GitHub account
-    pub fn discover_repositories_from_account(account: &str) -> Result<Vec<Repository>> {
+    pub fn discover_repositories_from_account(
+        account: &str,
+        protocol: crate::models::GitProtocol,
+    ) -> Result<Vec<Repository>> {
         use crate::ui;
 
         let mut repos = Vec::new();
@@ -99,7 +102,7 @@ impl GitHubService {
 
         // Get user repositories
         ui::print_info(&format!("  Fetching personal repositories for {account}"));
-        let user_repos = Self::get_user_repositories(account)?;
+        let user_repos = Self::get_user_repositories(account, protocol)?;
         ui::print_info(&format!(
             "    Found {} personal repositories",
             user_repos.len()
@@ -110,7 +113,7 @@ impl GitHubService {
         ui::print_info(&format!(
             "  Fetching organization repositories for {account}"
         ));
-        let org_repos = Self::get_organization_repositories(account)?;
+        let org_repos = Self::get_organization_repositories(account, protocol)?;
         ui::print_info(&format!(
             "    Found {} organization repositories",
             org_repos.len()
@@ -126,16 +129,17 @@ impl GitHubService {
     }
 
     /// Get user's personal repositories
-    fn get_user_repositories(account: &str) -> Result<Vec<Repository>> {
+    fn get_user_repositories(
+        account: &str,
+        protocol: crate::models::GitProtocol,
+    ) -> Result<Vec<Repository>> {
+        let url_field = match protocol {
+            crate::models::GitProtocol::Ssh => "sshUrl",
+            crate::models::GitProtocol::Https => "httpCloneUrl",
+        };
+        let json_fields = format!("name,{url_field},isPrivate");
         let output = Command::new("gh")
-            .args([
-                "repo",
-                "list",
-                "--limit",
-                "1000",
-                "--json",
-                "name,sshUrl,isPrivate",
-            ])
+            .args(["repo", "list", "--limit", "1000", "--json", &json_fields])
             .output()
             .context("Failed to get user repositories")?;
 
@@ -182,17 +186,23 @@ impl GitHubService {
         for repo_data in repos_json {
             if let (Some(name), Some(url), Some(is_private)) = (
                 repo_data["name"].as_str(),
-                repo_data["sshUrl"].as_str(),
+                repo_data[url_field].as_str(),
                 repo_data["isPrivate"].as_bool(),
             ) {
                 let privacy_indicator = if is_private { " [private]" } else { "" };
 
-                // Transform URL to use SSH host alias if available
-                let transformed_url = crate::git::transform_github_url_for_account(url, account);
+                // For SSH protocol, apply SSH host alias transformation if configured.
+                // For HTTPS protocol, the URL is used as-is.
+                let final_url = match protocol {
+                    crate::models::GitProtocol::Ssh => {
+                        crate::git::transform_github_url_for_account(url, account)
+                    }
+                    crate::models::GitProtocol::Https => url.to_string(),
+                };
 
                 repos.push(Repository {
                     name: name.to_string(),
-                    url: transformed_url,
+                    url: final_url,
                     is_private,
                     source: format!("GitHub ({account}){privacy_indicator}"),
                     account: Some(account.to_string()),
@@ -210,7 +220,10 @@ impl GitHubService {
     }
 
     /// Get repositories from organizations the user belongs to
-    fn get_organization_repositories(account: &str) -> Result<Vec<Repository>> {
+    fn get_organization_repositories(
+        account: &str,
+        protocol: crate::models::GitProtocol,
+    ) -> Result<Vec<Repository>> {
         // First, get list of organizations
         let orgs_output = Command::new("gh")
             .args(["api", "user/orgs", "--jq", ".[].login"])
@@ -242,7 +255,7 @@ impl GitHubService {
                 i + 1,
                 orgs.len()
             ));
-            let org_repos = Self::get_repositories_for_organization(org, account)?;
+            let org_repos = Self::get_repositories_for_organization(org, account, protocol)?;
             ui::print_info(&format!(
                 "      Found {} repositories in {}",
                 org_repos.len(),
@@ -255,7 +268,16 @@ impl GitHubService {
     }
 
     /// Get repositories for a specific organization
-    fn get_repositories_for_organization(org: &str, account: &str) -> Result<Vec<Repository>> {
+    fn get_repositories_for_organization(
+        org: &str,
+        account: &str,
+        protocol: crate::models::GitProtocol,
+    ) -> Result<Vec<Repository>> {
+        let url_field = match protocol {
+            crate::models::GitProtocol::Ssh => "sshUrl",
+            crate::models::GitProtocol::Https => "httpCloneUrl",
+        };
+        let json_fields = format!("name,{url_field},isPrivate");
         let output = Command::new("gh")
             .args([
                 "repo",
@@ -264,7 +286,7 @@ impl GitHubService {
                 "--limit",
                 "1000",
                 "--json",
-                "name,sshUrl,isPrivate",
+                &json_fields,
             ])
             .output()
             .context("Failed to get organization repositories")?;
@@ -284,17 +306,21 @@ impl GitHubService {
         for repo_data in repos_json {
             if let (Some(name), Some(url), Some(is_private)) = (
                 repo_data["name"].as_str(),
-                repo_data["sshUrl"].as_str(),
+                repo_data[url_field].as_str(),
                 repo_data["isPrivate"].as_bool(),
             ) {
                 let privacy_indicator = if is_private { " [private]" } else { "" };
 
-                // Transform URL to use SSH host alias if available
-                let transformed_url = crate::git::transform_github_url_for_account(url, account);
+                let final_url = match protocol {
+                    crate::models::GitProtocol::Ssh => {
+                        crate::git::transform_github_url_for_account(url, account)
+                    }
+                    crate::models::GitProtocol::Https => url.to_string(),
+                };
 
                 repos.push(Repository {
                     name: name.to_string(),
-                    url: transformed_url,
+                    url: final_url,
                     is_private,
                     source: format!("GitHub ({org}/{account}){privacy_indicator}"),
                     account: Some(account.to_string()),
@@ -312,7 +338,9 @@ impl GitHubService {
     }
 
     /// Discover all repositories from all available accounts
-    pub fn discover_all_repositories() -> Result<Vec<Repository>> {
+    pub fn discover_all_repositories(
+        protocol: crate::models::GitProtocol,
+    ) -> Result<Vec<Repository>> {
         let accounts = Self::get_available_accounts()?;
 
         if accounts.is_empty() {
@@ -325,7 +353,7 @@ impl GitHubService {
         let mut all_repos = Vec::new();
 
         for account in &accounts {
-            match Self::discover_repositories_from_account(account) {
+            match Self::discover_repositories_from_account(account, protocol) {
                 Ok(repos) => {
                     all_repos.extend(repos);
                 }
