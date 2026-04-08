@@ -135,7 +135,7 @@ impl GitHubService {
     ) -> Result<Vec<Repository>> {
         let url_field = match protocol {
             crate::models::GitProtocol::Ssh => "sshUrl",
-            crate::models::GitProtocol::Https => "httpCloneUrl",
+            crate::models::GitProtocol::Https => "url",
         };
         let json_fields = format!("name,{url_field},isPrivate");
         let output = Command::new("gh")
@@ -192,12 +192,21 @@ impl GitHubService {
                 let privacy_indicator = if is_private { " [private]" } else { "" };
 
                 // For SSH protocol, apply SSH host alias transformation if configured.
-                // For HTTPS protocol, the URL is used as-is.
+                // For HTTPS protocol, gh's `url` field omits the .git suffix — append it.
                 let final_url = match protocol {
                     crate::models::GitProtocol::Ssh => {
                         crate::git::transform_github_url_for_account(url, account)
                     }
-                    crate::models::GitProtocol::Https => url.to_string(),
+                    crate::models::GitProtocol::Https => {
+                        if std::path::Path::new(url)
+                            .extension()
+                            .is_some_and(|ext| ext.eq_ignore_ascii_case("git"))
+                        {
+                            url.to_string()
+                        } else {
+                            format!("{url}.git")
+                        }
+                    }
                 };
 
                 repos.push(Repository {
@@ -275,7 +284,7 @@ impl GitHubService {
     ) -> Result<Vec<Repository>> {
         let url_field = match protocol {
             crate::models::GitProtocol::Ssh => "sshUrl",
-            crate::models::GitProtocol::Https => "httpCloneUrl",
+            crate::models::GitProtocol::Https => "url",
         };
         let json_fields = format!("name,{url_field},isPrivate");
         let output = Command::new("gh")
@@ -315,7 +324,16 @@ impl GitHubService {
                     crate::models::GitProtocol::Ssh => {
                         crate::git::transform_github_url_for_account(url, account)
                     }
-                    crate::models::GitProtocol::Https => url.to_string(),
+                    crate::models::GitProtocol::Https => {
+                        if std::path::Path::new(url)
+                            .extension()
+                            .is_some_and(|ext| ext.eq_ignore_ascii_case("git"))
+                        {
+                            url.to_string()
+                        } else {
+                            format!("{url}.git")
+                        }
+                    }
                 };
 
                 repos.push(Repository {

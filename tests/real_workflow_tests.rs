@@ -1,6 +1,7 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
+use std::process::Command as StdCommand;
 use tempfile::TempDir;
 
 /// Real workflow integration tests
@@ -213,6 +214,72 @@ fn test_hierarchical_view_detection() {
         .success()
         .stdout(predicates::str::contains("Viewset: test-viewset"))
         .stdout(predicates::str::contains("View: test-view"));
+}
+
+/// Contract tests: verify that the exact `gh repo list --json` field names we use are
+/// accepted by the installed `gh` CLI. These tests guard against the class of bug where
+/// our code assumes a field name that `gh` does not recognise (e.g. "httpCloneUrl").
+///
+/// The tests are skipped automatically if `gh` is not available or not authenticated,
+/// so they are safe to run in offline/unauthenticated environments.
+#[test]
+fn test_gh_repo_list_ssh_url_field_is_valid() {
+    // Check gh is available and authenticated; skip if not.
+    let auth = StdCommand::new("gh").args(["auth", "status"]).output();
+    let Ok(auth_output) = auth else { return };
+    if !auth_output.status.success() {
+        return;
+    }
+
+    // Run gh repo list requesting only the sshUrl field.
+    // If the field name is wrong, gh exits non-zero and prints "Unknown JSON field".
+    let output = StdCommand::new("gh")
+        .args([
+            "repo",
+            "list",
+            "--limit",
+            "1",
+            "--json",
+            "sshUrl,name,isPrivate",
+        ])
+        .output()
+        .expect("Failed to run gh");
+
+    assert!(
+        output.status.success(),
+        "gh repo list --json sshUrl,name,isPrivate failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_gh_repo_list_https_url_field_is_valid() {
+    // Check gh is available and authenticated; skip if not.
+    let auth = StdCommand::new("gh").args(["auth", "status"]).output();
+    let Ok(auth_output) = auth else { return };
+    if !auth_output.status.success() {
+        return;
+    }
+
+    // Run gh repo list requesting only the url field (HTTPS web URL).
+    // If the field name is wrong, gh exits non-zero and prints "Unknown JSON field".
+    let output = StdCommand::new("gh")
+        .args([
+            "repo",
+            "list",
+            "--limit",
+            "1",
+            "--json",
+            "url,name,isPrivate",
+        ])
+        .output()
+        .expect("Failed to run gh");
+
+    assert!(
+        output.status.success(),
+        "gh repo list --json url,name,isPrivate failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
