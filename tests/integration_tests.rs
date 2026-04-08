@@ -90,3 +90,53 @@ fn test_basic_command_structure() {
         .stdout(predicates::str::contains("commit-all"))
         .stdout(predicates::str::contains("push-all"));
 }
+
+#[test]
+fn test_https_url_loads_without_unusual_url_warning() {
+    // Create a viewset structure with HTTPS URLs
+    let temp_dir = TempDir::new().unwrap();
+    let viewset_dir = temp_dir.path();
+    let view_dir = viewset_dir.join("default");
+    fs::create_dir_all(&view_dir).unwrap();
+
+    let repos_json = r#"[
+        {
+            "name": "test-repo",
+            "url": "https://github.com/testorg/test-repo.git",
+            "is_private": false,
+            "source": "GitHub (testorg)"
+        }
+    ]"#;
+    fs::write(viewset_dir.join(".viewyard-repos.json"), repos_json).unwrap();
+
+    // Run status from within the view directory - should load the HTTPS URL without
+    // producing an "unusual URL format" warning, since it's a valid GitHub HTTPS URL
+    let mut cmd = Command::cargo_bin("viewyard").unwrap();
+    cmd.arg("status").current_dir(&view_dir);
+
+    cmd.assert()
+        .stderr(predicates::str::contains("unusual URL format").not());
+}
+
+#[test]
+fn test_https_url_is_not_mutated_by_ssh_alias_transformation() {
+    // Create a viewset structure with HTTPS URLs
+    let temp_dir = TempDir::new().unwrap();
+    let viewset_dir = temp_dir.path();
+    let view_dir = viewset_dir.join("default");
+    fs::create_dir_all(&view_dir).unwrap();
+
+    let https_url = "https://github.com/testorg/test-repo.git";
+    let repos_json = format!(
+        r#"[{{"name":"test-repo","url":"{https_url}","is_private":false,"source":"GitHub (testorg)"}}]"#
+    );
+    fs::write(viewset_dir.join(".viewyard-repos.json"), repos_json).unwrap();
+
+    // status output should reference the original HTTPS URL (not a mutated SSH form)
+    let mut cmd = Command::cargo_bin("viewyard").unwrap();
+    cmd.arg("status").current_dir(&view_dir);
+
+    // The URL must not have been transformed to an SSH form like "git@github.com-..."
+    cmd.assert()
+        .stderr(predicates::str::contains("git@github.com-testorg").not());
+}
