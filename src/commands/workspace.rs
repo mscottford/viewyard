@@ -760,7 +760,7 @@ fn validate_branch_synchronization(view_context: &ViewContext) -> Result<()> {
     // Report any errors
     if !errors.is_empty() {
         for error in &errors {
-            ui::print_warning(&error.to_string());
+            ui::print_warning(&error.clone());
         }
         anyhow::bail!("Cannot validate branch synchronization due to repository errors");
     }
