@@ -14,7 +14,8 @@ use commands::workspace;
 use github::GitHubService;
 use interactive::InteractiveSelector;
 
-/// Validate and load repository configuration from JSON file
+/// Validate and load repository configuration from JSON file, normalizing URLs to the
+/// protocol stored in `.viewyard-config.json` (if present, otherwise no normalization).
 fn load_and_validate_repos(repos_file: &std::path::Path) -> Result<Vec<models::Repository>> {
     let repos_json = std::fs::read_to_string(repos_file).with_context(|| {
         format!(
@@ -32,12 +33,21 @@ fn load_and_validate_repos(repos_file: &std::path::Path) -> Result<Vec<models::R
             )
         })?;
 
-    // Transform URLs to use SSH host aliases if available
+    // Normalize URLs to the viewset protocol and apply SSH host aliases
+    let viewset_root = repos_file
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let viewset_config = load_viewset_config(viewset_root);
     for repo in &mut repositories {
-        if let Some(ref account) = repo.account {
-            repo.url = git::transform_github_url_for_account(&repo.url, account);
-        } else if let Ok(account) = git::extract_account_from_source(&repo.source) {
-            repo.url = git::transform_github_url_for_account(&repo.url, &account);
+        // First, normalize the URL to the viewset protocol
+        repo.url = git::normalize_url_for_protocol(&repo.url, viewset_config.protocol);
+        // Then, for SSH protocol, apply SSH host alias transformation if configured
+        if viewset_config.protocol == models::GitProtocol::Ssh {
+            if let Some(ref account) = repo.account {
+                repo.url = git::transform_github_url_for_account(&repo.url, account);
+            } else if let Ok(account) = git::extract_account_from_source(&repo.source) {
+                repo.url = git::transform_github_url_for_account(&repo.url, &account);
+            }
         }
     }
 
@@ -128,12 +138,18 @@ enum ViewsetCommand {
         /// GitHub account to search repositories from
         #[arg(long)]
         account: Option<String>,
+        /// Git transport protocol to use for cloning: ssh (default) or https
+        #[arg(long, value_name = "PROTOCOL")]
+        protocol: Option<String>,
     },
     /// Update an existing viewset by adding new repositories
     Update {
         /// GitHub account to search repositories from
         #[arg(short, long)]
         account: Option<String>,
+        /// Git transport protocol override: ssh or https (default: value stored at viewset creation)
+        #[arg(long, value_name = "PROTOCOL")]
+        protocol: Option<String>,
     },
 }
 
@@ -170,8 +186,14 @@ fn main() -> Result<()> {
 
 fn handle_viewset_command(action: ViewsetCommand) -> Result<()> {
     match action {
-        ViewsetCommand::Create { name, account } => create_viewset(&name, account.as_deref()),
-        ViewsetCommand::Update { account } => update_viewset(account.as_deref()),
+        ViewsetCommand::Create {
+            name,
+            account,
+            protocol,
+        } => create_viewset(&name, account.as_deref(), protocol.as_deref()),
+        ViewsetCommand::Update { account, protocol } => {
+            update_viewset(account.as_deref(), protocol.as_deref())
+        }
     }
 }
 
@@ -182,8 +204,32 @@ fn handle_view_command(action: ViewCommand) -> Result<()> {
     }
 }
 
-fn create_viewset(name: &str, account: Option<&str>) -> Result<()> {
+/// Read .viewyard-config.json from a viewset root, returning defaults if absent.
+fn load_viewset_config(viewset_root: &std::path::Path) -> models::ViewsetConfig {
+    let config_file = viewset_root.join(".viewyard-config.json");
+    std::fs::read_to_string(&config_file).map_or_else(
+        |_| models::ViewsetConfig::default(),
+        |json| serde_json::from_str(&json).unwrap_or_default(),
+    )
+}
+
+/// Write .viewyard-config.json to a viewset root.
+fn save_viewset_config(
+    viewset_root: &std::path::Path,
+    config: &models::ViewsetConfig,
+) -> Result<()> {
+    let config_file = viewset_root.join(".viewyard-config.json");
+    let json = serde_json::to_string_pretty(config)?;
+    std::fs::write(&config_file, json)?;
+    Ok(())
+}
+
+fn create_viewset(name: &str, account: Option<&str>, protocol_flag: Option<&str>) -> Result<()> {
     ui::print_info(&format!("Creating viewset: {name}"));
+
+    // Resolve git protocol: flag > VIEWYARD_GIT_PROTOCOL env var > default (ssh)
+    let env_protocol = std::env::var("VIEWYARD_GIT_PROTOCOL").ok();
+    let protocol = git::resolve_protocol(protocol_flag, env_protocol.as_deref())?;
 
     // Check if git is available
     git::check_git_availability()?;
@@ -199,7 +245,7 @@ fn create_viewset(name: &str, account: Option<&str>) -> Result<()> {
     }
 
     // Discover repositories
-    let Ok(repositories) = discover_repositories_for_viewset(account) else {
+    let Ok(repositories) = discover_repositories_for_viewset(account, protocol) else {
         return create_empty_viewset(&viewset_path, name, "when GitHub CLI is set up");
     };
 
@@ -225,10 +271,13 @@ fn create_viewset(name: &str, account: Option<&str>) -> Result<()> {
         viewset_path.display()
     ));
 
-    // Store repository list for the viewset
+    // Store repository list and viewset config
     let repos_file = viewset_path.join(".viewyard-repos.json");
     let repos_json = serde_json::to_string_pretty(&selected_repos)?;
     std::fs::write(&repos_file, repos_json)?;
+
+    let config = models::ViewsetConfig { protocol };
+    save_viewset_config(&viewset_path, &config)?;
 
     ui::print_success(&format!(
         "Viewset '{}' created successfully with {} repositories!",
@@ -635,7 +684,10 @@ fn clone_and_setup_repository_in_view(
 }
 
 /// Discover repositories from GitHub based on account preference
-fn discover_repositories_for_viewset(account: Option<&str>) -> Result<Vec<models::Repository>> {
+fn discover_repositories_for_viewset(
+    account: Option<&str>,
+    protocol: models::GitProtocol,
+) -> Result<Vec<models::Repository>> {
     // Check GitHub CLI availability
     if !GitHubService::check_availability()? {
         ui::show_error_with_help(
@@ -653,9 +705,9 @@ fn discover_repositories_for_viewset(account: Option<&str>) -> Result<Vec<models
     ui::print_info("Discovering repositories from GitHub...");
 
     let repositories = if let Some(specific_account) = account {
-        GitHubService::discover_repositories_from_account(specific_account)?
+        GitHubService::discover_repositories_from_account(specific_account, protocol)?
     } else {
-        GitHubService::discover_all_repositories()?
+        GitHubService::discover_all_repositories(protocol)?
     };
 
     if repositories.is_empty() {
@@ -724,7 +776,7 @@ fn select_repositories_for_update(
     Ok(selected_repos)
 }
 
-fn update_viewset(account: Option<&str>) -> Result<()> {
+fn update_viewset(account: Option<&str>, protocol_flag: Option<&str>) -> Result<()> {
     ui::print_info("Updating viewset with new repositories");
 
     // Check if git is available
@@ -747,11 +799,20 @@ fn update_viewset(account: Option<&str>) -> Result<()> {
         return Err(anyhow::anyhow!("Not in a viewset directory"));
     }
 
+    // Resolve protocol: flag > env var > stored config > default (ssh)
+    let stored_config = load_viewset_config(&current_dir);
+    let env_protocol = std::env::var("VIEWYARD_GIT_PROTOCOL").ok();
+    let protocol = if protocol_flag.is_some() || env_protocol.is_some() {
+        git::resolve_protocol(protocol_flag, env_protocol.as_deref())?
+    } else {
+        stored_config.protocol
+    };
+
     // Load existing repositories
     let existing_repos = load_and_validate_repos(&repos_file)?;
 
     // Discover available repositories
-    let Ok(all_repos) = discover_repositories_for_viewset(account) else {
+    let Ok(all_repos) = discover_repositories_for_viewset(account, protocol) else {
         ui::print_info("Falling back to manual repository management.");
         ui::print_info("Edit .viewyard-repos.json manually to add repositories.");
         return Ok(());

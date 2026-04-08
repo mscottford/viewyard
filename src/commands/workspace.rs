@@ -6,6 +6,15 @@ use crate::git;
 use crate::models;
 use crate::ui;
 
+/// Read .viewyard-config.json from a viewset root, returning defaults if absent.
+fn load_viewset_config(viewset_root: &Path) -> crate::models::ViewsetConfig {
+    let config_file = viewset_root.join(".viewyard-config.json");
+    std::fs::read_to_string(&config_file).map_or_else(
+        |_| crate::models::ViewsetConfig::default(),
+        |json| serde_json::from_str(&json).unwrap_or_default(),
+    )
+}
+
 /// Validate and load repository configuration from JSON file
 fn load_and_validate_repos(repos_file: &Path) -> Result<Vec<models::Repository>> {
     let repos_json = std::fs::read_to_string(repos_file).with_context(|| {
@@ -24,12 +33,19 @@ fn load_and_validate_repos(repos_file: &Path) -> Result<Vec<models::Repository>>
             )
         })?;
 
-    // Transform URLs to use SSH host aliases if available
+    // Normalize URLs to the viewset protocol and apply SSH host aliases
+    let viewset_root = repos_file
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let viewset_config = load_viewset_config(viewset_root);
     for repo in &mut repositories {
-        if let Some(ref account) = repo.account {
-            repo.url = crate::git::transform_github_url_for_account(&repo.url, account);
-        } else if let Ok(account) = crate::git::extract_account_from_source(&repo.source) {
-            repo.url = crate::git::transform_github_url_for_account(&repo.url, &account);
+        repo.url = crate::git::normalize_url_for_protocol(&repo.url, viewset_config.protocol);
+        if viewset_config.protocol == crate::models::GitProtocol::Ssh {
+            if let Some(ref account) = repo.account {
+                repo.url = crate::git::transform_github_url_for_account(&repo.url, account);
+            } else if let Ok(account) = crate::git::extract_account_from_source(&repo.source) {
+                repo.url = crate::git::transform_github_url_for_account(&repo.url, &account);
+            }
         }
     }
 
