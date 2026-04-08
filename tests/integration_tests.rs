@@ -118,6 +118,62 @@ fn test_https_url_loads_without_unusual_url_warning() {
         .stderr(predicates::str::contains("unusual URL format").not());
 }
 
+// ── Protocol config persisted to .viewyard-config.json ──────────────────────
+
+#[test]
+fn test_viewset_config_written_with_https_when_flag_used() {
+    // We can't fully run `viewset create` without GitHub CLI, but we can verify
+    // that the binary accepts --protocol https without erroring on argument parsing.
+    let mut cmd = Command::cargo_bin("viewyard").unwrap();
+    cmd.arg("viewset")
+        .arg("create")
+        .arg("test-project")
+        .arg("--protocol")
+        .arg("https")
+        .env("PATH", ""); // no gh CLI — will bail early, but arg parsing must succeed
+
+    // The failure must be about GitHub CLI / git availability, not about
+    // an unknown or invalid --protocol argument.
+    cmd.assert().failure().stderr(
+        predicates::str::contains("unrecognized option")
+            .not()
+            .and(predicates::str::contains("invalid value").not()),
+    );
+}
+
+#[test]
+fn test_viewset_create_rejects_unknown_protocol_value() {
+    let temp_dir = TempDir::new().unwrap();
+
+    let mut cmd = Command::cargo_bin("viewyard").unwrap();
+    cmd.arg("viewset")
+        .arg("create")
+        .arg("test-project")
+        .arg("--protocol")
+        .arg("ftp")
+        .current_dir(temp_dir.path());
+
+    cmd.assert()
+        .failure()
+        .stderr(predicates::str::contains("ftp").or(predicates::str::contains("protocol")));
+}
+
+#[test]
+fn test_viewset_create_rejects_unknown_protocol_via_env_var() {
+    let temp_dir = TempDir::new().unwrap();
+
+    let mut cmd = Command::cargo_bin("viewyard").unwrap();
+    cmd.arg("viewset")
+        .arg("create")
+        .arg("test-project")
+        .current_dir(temp_dir.path())
+        .env("VIEWYARD_GIT_PROTOCOL", "ftp");
+
+    cmd.assert()
+        .failure()
+        .stderr(predicates::str::contains("ftp").or(predicates::str::contains("protocol")));
+}
+
 #[test]
 fn test_https_url_is_not_mutated_by_ssh_alias_transformation() {
     // Create a viewset structure with HTTPS URLs

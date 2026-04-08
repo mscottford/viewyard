@@ -3,6 +3,7 @@ use std::fs;
 use std::process::Command;
 use tempfile::TempDir;
 use viewyard::git;
+use viewyard::models::GitProtocol;
 
 /// Helper function to create a test repo with a remote that has a specific default branch
 fn create_test_repo_with_remote_default(remote_default: &str) -> Result<TempDir> {
@@ -456,4 +457,87 @@ fn test_transform_github_url_for_account() {
     let gitlab_url = "git@gitlab.com:dheater/test-repo.git";
     let unchanged_gitlab = git::transform_github_url_for_account(gitlab_url, "dheater");
     assert_eq!(unchanged_gitlab, gitlab_url);
+}
+
+// ── Protocol resolution ──────────────────────────────────────────────────────
+
+#[test]
+fn test_resolve_protocol_defaults_to_ssh() {
+    let protocol = git::resolve_protocol(None, None).unwrap();
+    assert_eq!(protocol, GitProtocol::Ssh);
+}
+
+#[test]
+fn test_resolve_protocol_env_var_https() {
+    let protocol = git::resolve_protocol(None, Some("https")).unwrap();
+    assert_eq!(protocol, GitProtocol::Https);
+}
+
+#[test]
+fn test_resolve_protocol_env_var_ssh() {
+    let protocol = git::resolve_protocol(None, Some("ssh")).unwrap();
+    assert_eq!(protocol, GitProtocol::Ssh);
+}
+
+#[test]
+fn test_resolve_protocol_flag_overrides_env_var() {
+    // Flag says ssh, env says https — flag wins
+    let protocol = git::resolve_protocol(Some("ssh"), Some("https")).unwrap();
+    assert_eq!(protocol, GitProtocol::Ssh);
+}
+
+#[test]
+fn test_resolve_protocol_flag_https_overrides_env_ssh() {
+    let protocol = git::resolve_protocol(Some("https"), Some("ssh")).unwrap();
+    assert_eq!(protocol, GitProtocol::Https);
+}
+
+#[test]
+fn test_resolve_protocol_unknown_value_errors() {
+    assert!(git::resolve_protocol(Some("ftp"), None).is_err());
+    assert!(git::resolve_protocol(None, Some("ftp")).is_err());
+}
+
+// ── URL normalisation ────────────────────────────────────────────────────────
+
+#[test]
+fn test_normalize_ssh_url_to_https() {
+    let ssh_url = "git@github.com:dheater/viewyard.git";
+    let result = git::normalize_url_for_protocol(ssh_url, GitProtocol::Https);
+    assert_eq!(result, "https://github.com/dheater/viewyard.git");
+}
+
+#[test]
+fn test_normalize_https_url_to_ssh() {
+    let https_url = "https://github.com/dheater/viewyard.git";
+    let result = git::normalize_url_for_protocol(https_url, GitProtocol::Ssh);
+    assert_eq!(result, "git@github.com:dheater/viewyard.git");
+}
+
+#[test]
+fn test_normalize_ssh_url_to_ssh_is_identity() {
+    let ssh_url = "git@github.com:dheater/viewyard.git";
+    let result = git::normalize_url_for_protocol(ssh_url, GitProtocol::Ssh);
+    assert_eq!(result, ssh_url);
+}
+
+#[test]
+fn test_normalize_https_url_to_https_is_identity() {
+    let https_url = "https://github.com/dheater/viewyard.git";
+    let result = git::normalize_url_for_protocol(https_url, GitProtocol::Https);
+    assert_eq!(result, https_url);
+}
+
+#[test]
+fn test_normalize_non_github_url_is_unchanged() {
+    let gitlab_url = "git@gitlab.com:org/repo.git";
+    assert_eq!(
+        git::normalize_url_for_protocol(gitlab_url, GitProtocol::Https),
+        gitlab_url
+    );
+    let gitlab_https = "https://gitlab.com/org/repo.git";
+    assert_eq!(
+        git::normalize_url_for_protocol(gitlab_https, GitProtocol::Ssh),
+        gitlab_https
+    );
 }
