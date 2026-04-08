@@ -282,6 +282,11 @@ pub fn detect_ssh_host_aliases() -> HashMap<String, String> {
 /// Returns the original URL if no alias is found or if it's not a GitHub SSH URL
 #[must_use]
 pub fn transform_github_url_for_account(url: &str, account: &str) -> String {
+    // HTTPS URLs are used as-is; SSH host alias config does not apply to them
+    if url.starts_with("https://") {
+        return url.to_string();
+    }
+
     // Only transform SSH URLs for github.com
     if !url.starts_with("git@github.com:") {
         return url.to_string();
