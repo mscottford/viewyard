@@ -227,6 +227,49 @@ pub fn get_default_branch(cwd: &Path) -> Result<String> {
     anyhow::bail!("Could not determine default branch for repository")
 }
 
+/// Resolve the git protocol from an optional CLI flag and optional environment variable.
+///
+/// Priority (highest first): flag → env var → default (`ssh`).
+/// Returns an error if either provided value is not `"ssh"` or `"https"`.
+pub fn resolve_protocol(
+    flag: Option<&str>,
+    env_var: Option<&str>,
+) -> Result<crate::models::GitProtocol> {
+    let raw = flag.or(env_var);
+    match raw {
+        None | Some("ssh") => Ok(crate::models::GitProtocol::Ssh),
+        Some("https") => Ok(crate::models::GitProtocol::Https),
+        Some(other) => anyhow::bail!("Invalid protocol '{}': expected 'ssh' or 'https'", other),
+    }
+}
+
+/// Convert a GitHub repository URL to the specified protocol.
+///
+/// Handles:
+/// - SSH → HTTPS: `git@github.com:org/repo.git` → `https://github.com/org/repo.git`
+/// - HTTPS → SSH: `https://github.com/org/repo.git` → `git@github.com:org/repo.git`
+///
+/// Non-GitHub URLs and URLs already in the target protocol are returned unchanged.
+#[must_use]
+pub fn normalize_url_for_protocol(url: &str, protocol: crate::models::GitProtocol) -> String {
+    match protocol {
+        crate::models::GitProtocol::Https => {
+            // Convert SSH → HTTPS for github.com only
+            if let Some(path) = url.strip_prefix("git@github.com:") {
+                return format!("https://github.com/{path}");
+            }
+            url.to_string()
+        }
+        crate::models::GitProtocol::Ssh => {
+            // Convert HTTPS → SSH for github.com only
+            if let Some(path) = url.strip_prefix("https://github.com/") {
+                return format!("git@github.com:{path}");
+            }
+            url.to_string()
+        }
+    }
+}
+
 /// Detect SSH host aliases for GitHub from SSH config
 /// Returns a map of account -> SSH host (e.g., "dheater" -> "github.com-dheater")
 #[must_use]
